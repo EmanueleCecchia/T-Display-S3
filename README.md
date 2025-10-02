@@ -124,7 +124,7 @@
 
 ## 9️⃣ WIFI
 
-1. create a file called secrets.h on the same directory of platformio.h
+1. create a file called secrets.h on the same directory of platformio.ini
 2. ```H
    #define WIFI_SSID                    "Your-ssid"
    #define WIFI_PASSWORD                "Your-password"
