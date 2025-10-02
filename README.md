@@ -122,7 +122,15 @@
 | [T-Display-S3-MIDI][1]  | [schematic](./schematic/SCH_T-Display-S3-MIDI_V1.1.pdf) | DWG                         | STP                                       |                                          |
 
 
-## 9️⃣ FAQ
+## 9️⃣ WIFI
+
+1. create a file called secrets.h on the same directory of platformio.h
+2. ```H
+   #define WIFI_SSID                    "Your-ssid"
+   #define WIFI_PASSWORD                "Your-password"
+   ```
+
+## 1️⃣0️⃣ FAQ
 
 1. **The screen does not light up when using battery?**
    * When T-Display-S3 is powered by battery, GPIO15 must be set to HIGH to turn on the backlight.
