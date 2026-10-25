@@ -35,6 +35,7 @@
 ├── nes                          #  NES game emulator
 ├── ota                          #  Over-the-air upgrade example
 ├── sd                           #  T-Display-TF Shield example
+├── spotify                      #  Spotify now-playing display with button controls
 ├── tft                          #  TFT_eSPI example
 ├── touch_test                   #  Capacitive touch test example
 ├── usb_hid_pad                  #  Capacitive Touch Screen Simulation USB HID Example
@@ -130,7 +131,28 @@
    #define WIFI_PASSWORD                "Your-password"
    ```
 
-## 1️⃣0️⃣ FAQ
+## 1️⃣0️⃣ Spotify
+
+The `spotify` example shows what is playing on your Spotify account (album art, title, artist, device, progress and an animated visualizer) and controls playback with the two buttons.
+
+1. Set up WiFi in `secrets.h` as described above
+2. On the [Spotify for Developers dashboard](https://developer.spotify.com/dashboard) click `Create app`, add the Redirect URI `http://127.0.0.1:8888/callback` and tick `Web API`
+3. Copy the app's `Client ID` from its `Settings` page
+4. From the `T-Display-S3` directory run `python tools/spotify_auth.py`, paste the Client ID and log in through the browser page it opens. It adds `SPOTIFY_CLIENT_ID` and `SPOTIFY_REFRESH_TOKEN` to `secrets.h` (no Client Secret is used)
+5. Set `default_envs = spotify` in `platformio.ini`, then compile and upload
+
+| Button          | Action         |
+| --------------- | -------------- |
+| BOOT (GPIO0)    | Previous track |
+| KEY (GPIO14)    | Next track     |
+| Hold either one | Play / pause   |
+
+* Skipping and pausing require Spotify Premium; otherwise the reason Spotify gives is shown at the top of the screen
+* The login lasts 6 months. When the screen says `Spotify login needed`, run `tools/spotify_auth.py` again and re-upload
+* Spotify no longer offers audio analysis, so the visualizer bars are an animation, not the real spectrum
+* The built-in fonts only contain ASCII, so accented letters are shown without accents (`Città` → `Citta`)
+
+## 1️⃣1️⃣ FAQ
 
 1. **The screen does not light up when using battery?**
    * When T-Display-S3 is powered by battery, GPIO15 must be set to HIGH to turn on the backlight.
