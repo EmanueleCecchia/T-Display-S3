@@ -21,7 +21,7 @@
 #define ROW_Y     140
 #define NOTICE_MS 4000
 
-static lv_obj_t *art_img, *header_label, *notice_label, *clock_label, *title_label, *artist_label;
+static lv_obj_t *art_img, *device_label, *notice_label, *clock_label, *title_label, *artist_label;
 static lv_obj_t *next_caption, *next_label, *shuffle_icon, *repeat_icon, *repeat_one_label, *volume_label;
 static lv_obj_t *progress_bar, *elapsed_label, *duration_label, *prev_icon, *play_icon, *next_icon;
 static lv_img_dsc_t art_dsc;
@@ -109,16 +109,7 @@ static void apply_state(void)
     set_text(artist_label, state.artist);
     lv_obj_set_style_text_color(title_label, alert ? COLOR_ALERT : COLOR_TEXT, 0);
 
-    /* "Spotify" attribution plus the device that is playing; '#' would break the recolor syntax */
-    char header[80] = "#1DB954 Spotify#";
-    if (active && state.device[0]) {
-        size_t n = strlen(header);
-        snprintf(header + n, sizeof(header) - n, "  %s", state.device);
-        for (char *c = header + n; *c; c++)
-            if (*c == '#')
-                *c = ' ';
-    }
-    set_text(header_label, header);
+    set_text(device_label, active ? state.device : "");
 
     if (state.notice_version != notice_version) {
         notice_version = state.notice_version;
@@ -228,10 +219,9 @@ void ui_begin(void)
     lv_img_set_src(art_img, &art_dsc);
     lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
 
-    /* Header: Spotify attribution + device, clock on the right */
-    header_label = make_label(&lv_font_montserrat_12, COLOR_SUBTEXT, COL_X, 8, COL_W - 40);
-    lv_label_set_long_mode(header_label, LV_LABEL_LONG_DOT);
-    lv_label_set_recolor(header_label, true);
+    /* Header: the device that is playing, clock on the right */
+    device_label = make_label(&lv_font_montserrat_12, COLOR_SUBTEXT, COL_X, 8, COL_W - 36);
+    lv_label_set_long_mode(device_label, LV_LABEL_LONG_DOT);
     clock_label = make_label(&lv_font_montserrat_12, COLOR_SUBTEXT, 0, 0, 0);
     lv_obj_align(clock_label, LV_ALIGN_TOP_RIGHT, -MARGIN, 8);
     notice_label = make_label(&lv_font_montserrat_12, COLOR_ALERT, COL_X, 8, COL_W);

@@ -444,11 +444,7 @@ static void update_queue(void)
     String next;
     if (code == HTTP_CODE_OK) {
         cJSON *root = cJSON_Parse(body.c_str());
-        const cJSON *item = cJSON_GetArrayItem(cJSON_GetObjectItem(root, "queue"), 0);
-        next = json_str(item, "name");
-        String artists = item_artists(item);
-        if (next.length() && artists.length())
-            next += " - " + artists;
+        next = json_str(cJSON_GetArrayItem(cJSON_GetObjectItem(root, "queue"), 0), "name");
         cJSON_Delete(root);
     } else if (code == HTTP_CODE_UNAUTHORIZED || code == HTTP_CODE_FORBIDDEN) {
         next = "Run tools/spotify_auth.py again to see the queue"; // token from before the scope was added

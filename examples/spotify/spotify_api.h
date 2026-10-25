@@ -33,7 +33,7 @@ typedef struct {
     char title[96];  /* track/episode name, or a status message */
     char artist[96]; /* artists/show name, or status details */
     char device[48];
-    char up_next[128]; /* "Title - Artist" of the next queued item, or a hint */
+    char up_next[128]; /* title of the next queued item, or a hint */
     char notice[64];   /* short-lived message, e.g. why a button press failed */
     bool shuffle;
     spotify_repeat_t repeat;
