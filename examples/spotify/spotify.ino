@@ -1,15 +1,24 @@
+/* Spotify now-playing display for the LilyGo T-Display-S3.
+ *
+ * Shows the album art, title, artist, progress and a visualizer of whatever plays on your
+ * Spotify account, and controls playback with the two buttons:
+ *   BOOT (GPIO0) click  : previous track
+ *   KEY (GPIO14) click  : next track
+ *   hold either button  : play / pause
+ *
+ * Setup: put WIFI_SSID / WIFI_PASSWORD in secrets.h, then run `python tools/spotify_auth.py`
+ * once to log in (it adds SPOTIFY_CLIENT_ID / SPOTIFY_REFRESH_TOKEN). Skipping and pausing need
+ * Spotify Premium.
+ */
+
 /* Please make sure your touch IC model. */
 // If you don't have a touch panel, you don't need to define a touch model
-
-// 定义一个触摸型号，如果不清楚你使用的触摸型号，可以任意定义一个触摸型号，将下面两行中的一个取消掉，如果触摸不正常，那就换另一个试试
-// 如果不定义,则禁用触摸功能
 // #define TOUCH_MODULES_CST_MUTUAL
 // #define TOUCH_MODULES_CST_SELF
 
 #if defined(TOUCH_MODULES_CST_MUTUAL) ||defined(TOUCH_MODULES_CST_SELF)
 #include "TouchLib.h"
 #endif
-// #define TOUCH_READ_FROM_INTERRNUPT
 
 /* The product now has two screens, and the initialization code needs a small change in the new version. The LCD_MODULE_CMD_1 is used to define the
  * switch macro. */
@@ -19,100 +28,17 @@
 #include "lvgl.h"      /* https://github.com/lvgl/lvgl.git */
 
 #include "Arduino.h"
-#include "SD_MMC.h"
 #include "WiFi.h"
 #include "Wire.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
-#include "spotify_gui.h"
-#include "pin_config.h"
 #include "esp_sntp.h"
-#include "time.h"
+#include "pin_config.h"
+#include "spotify_api.h"
+#include "spotify_gui.h"
 
-#include "zones.h"
-#include <HTTPClient.h>
-#include <WiFiClientSecure.h>
-#include <esp_wifi.h>
-
-// The factory program uses the Chinese time zone by default.
-// Commenting this line will automatically get the time zone, provided that the SSL certificate is valid.
-// Please pay attention to check the validity of the certificate.
-// The current configuration certificate is valid until Mar 29 22:40:08 2025 GMT
-
-// #define CUSTOM_TIMEZONE         "CST-8"
-#define CUSTOM_TIMEZONE            "CET-1CEST,M3.5.0,M10.5.0/3" // Europe/Rome
-
-#ifndef CUSTOM_TIMEZONE
-// Use command get server ca
-// openssl s_client -connect ipapi.co:443 -showcerts </dev/null 2> /dev/null | sed -n '/BEGIN/,/END/p' > server.pem
-
-// Check the validity period of the certificate
-// openssl s_client -connect ipapi.co:443 -servername ipapi.co 2>/dev/null | openssl x509 -noout -dates
-static const char *rootCACertificate PROGMEM = R"EOF(
------BEGIN CERTIFICATE-----
-MIIDmjCCA0GgAwIBAgIQKNsg9z6tYmQOV0wv+VFSyTAKBggqhkjOPQQDAjA7MQsw
-CQYDVQQGEwJVUzEeMBwGA1UEChMVR29vZ2xlIFRydXN0IFNlcnZpY2VzMQwwCgYD
-VQQDEwNXRTEwHhcNMjQxMjI5MjE0MDEwWhcNMjUwMzI5MjI0MDA4WjATMREwDwYD
-VQQDEwhpcGFwaS5jbzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEfuWuJphWh5
-CzoKqMJvfBA4v977Vu79l4P5aCtOPVPVBvNTxzdLwMvMp2XVas46AVCm/B4PODlw
-PxeL6BzYYMSjggJNMIICSTAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYB
-BQUHAwEwDAYDVR0TAQH/BAIwADAdBgNVHQ4EFgQU/2QCuuN/r4UoC67WpNau15Ex
-i4YwHwYDVR0jBBgwFoAUkHeSNWfE/6jMqeZ72YB5e8yT+TgwXgYIKwYBBQUHAQEE
-UjBQMCcGCCsGAQUFBzABhhtodHRwOi8vby5wa2kuZ29vZy9zL3dlMS9LTnMwJQYI
-KwYBBQUHMAKGGWh0dHA6Ly9pLnBraS5nb29nL3dlMS5jcnQwHwYDVR0RBBgwFoII
-aXBhcGkuY2+CCiouaXBhcGkuY28wEwYDVR0gBAwwCjAIBgZngQwBAgEwNgYDVR0f
-BC8wLTAroCmgJ4YlaHR0cDovL2MucGtpLmdvb2cvd2UxL2NNNzZRWlVYbUU4LmNy
-bDCCAQQGCisGAQQB1nkCBAIEgfUEgfIA8AB2AE51oydcmhDDOFts1N8/Uusd8OCO
-G41pwLH6ZLFimjnfAAABlBSTr2QAAAQDAEcwRQIhAIvH87A7Qo7VMPFXxf7M2nyD
-hvNFSHLNDXtPyRFX5d/cAiA+KbvJSSNo4A5tfnn2nQ4d3j0amEv1pvK53rhqhtD0
-kgB2AOCSs/wMHcjnaDYf3mG5lk0KUngZinLWcsSwTaVtb1QEAAABlBSTr4AAAAQD
-AEcwRQIhANvKZUFQP5HFqoRLfDyTmrgrqTRVlHOYSZB8o5FBFjkmAiA/7S/vCPIW
-tY9gHN7YlhvpxwXo3kvyK3UPTLyv2oVPJjAKBggqhkjOPQQDAgNHADBEAiBchwgj
-Iv79+O7ETpt63+rEFuKfITJRW7ly9yrYlzVCxwIga/EwDlz3XTdSQ5vug5Q7JlZF
-EHuBT3euPeKXDamodqo=
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIICnzCCAiWgAwIBAgIQf/MZd5csIkp2FV0TttaF4zAKBggqhkjOPQQDAzBHMQsw
-CQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEU
-MBIGA1UEAxMLR1RTIFJvb3QgUjQwHhcNMjMxMjEzMDkwMDAwWhcNMjkwMjIwMTQw
-MDAwWjA7MQswCQYDVQQGEwJVUzEeMBwGA1UEChMVR29vZ2xlIFRydXN0IFNlcnZp
-Y2VzMQwwCgYDVQQDEwNXRTEwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARvzTr+
-Z1dHTCEDhUDCR127WEcPQMFcF4XGGTfn1XzthkubgdnXGhOlCgP4mMTG6J7/EFmP
-LCaY9eYmJbsPAvpWo4H+MIH7MA4GA1UdDwEB/wQEAwIBhjAdBgNVHSUEFjAUBggr
-BgEFBQcDAQYIKwYBBQUHAwIwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQU
-kHeSNWfE/6jMqeZ72YB5e8yT+TgwHwYDVR0jBBgwFoAUgEzW63T/STaj1dj8tT7F
-avCUHYwwNAYIKwYBBQUHAQEEKDAmMCQGCCsGAQUFBzAChhhodHRwOi8vaS5wa2ku
-Z29vZy9yNC5jcnQwKwYDVR0fBCQwIjAgoB6gHIYaaHR0cDovL2MucGtpLmdvb2cv
-ci9yNC5jcmwwEwYDVR0gBAwwCjAIBgZngQwBAgEwCgYIKoZIzj0EAwMDaAAwZQIx
-AOcCq1HW90OVznX+0RGU1cxAQXomvtgM8zItPZCuFQ8jSBJSjz5keROv9aYsAm5V
-sQIwJonMaAFi54mrfhfoFNZEfuNMSQ6/bIBiNLiyoX46FohQvKeIoJ99cx7sUkFN
-7uJW
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIIDejCCAmKgAwIBAgIQf+UwvzMTQ77dghYQST2KGzANBgkqhkiG9w0BAQsFADBX
-MQswCQYDVQQGEwJCRTEZMBcGA1UEChMQR2xvYmFsU2lnbiBudi1zYTEQMA4GA1UE
-CxMHUm9vdCBDQTEbMBkGA1UEAxMSR2xvYmFsU2lnbiBSb290IENBMB4XDTIzMTEx
-NTAzNDMyMVoXDTI4MDEyODAwMDA0MlowRzELMAkGA1UEBhMCVVMxIjAgBgNVBAoT
-GUdvb2dsZSBUcnVzdCBTZXJ2aWNlcyBMTEMxFDASBgNVBAMTC0dUUyBSb290IFI0
-MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE83Rzp2iLYK5DuDXFgTB7S0md+8Fhzube
-Rr1r1WEYNa5A3XP3iZEwWus87oV8okB2O6nGuEfYKueSkWpz6bFyOZ8pn6KY019e
-WIZlD6GEZQbR3IvJx3PIjGov5cSr0R2Ko4H/MIH8MA4GA1UdDwEB/wQEAwIBhjAd
-BgNVHSUEFjAUBggrBgEFBQcDAQYIKwYBBQUHAwIwDwYDVR0TAQH/BAUwAwEB/zAd
-BgNVHQ4EFgQUgEzW63T/STaj1dj8tT7FavCUHYwwHwYDVR0jBBgwFoAUYHtmGkUN
-l8qJUC99BM00qP/8/UswNgYIKwYBBQUHAQEEKjAoMCYGCCsGAQUFBzAChhpodHRw
-Oi8vaS5wa2kuZ29vZy9nc3IxLmNydDAtBgNVHR8EJjAkMCKgIKAehhxodHRwOi8v
-Yy5wa2kuZ29vZy9yL2dzcjEuY3JsMBMGA1UdIAQMMAowCAYGZ4EMAQIBMA0GCSqG
-SIb3DQEBCwUAA4IBAQAYQrsPBtYDh5bjP2OBDwmkoWhIDDkic574y04tfzHpn+cJ
-odI2D4SseesQ6bDrarZ7C30ddLibZatoKiws3UL9xnELz4ct92vID24FfVbiI1hY
-+SW6FoVHkNeWIP0GCbaM4C6uVdF5dTUsMVs/ZbzNnIdCp5Gxmx5ejvEau8otR/Cs
-kGN+hr/W5GvT1tMBjgWKZ1i4//emhA1JG1BbPzoLJQvyEotc03lXjTaCzv8mEbep
-8RqZ7a2CPsgRbuvTPBwcOMBBmuFeU88+FSBX6+7iP0il8b4Z0QFqIwwMHfs/L6K1
-vepuoxtGzi4CZ68zJpiq1UvSqTbFJjtbD4seiMHl
------END CERTIFICATE-----
-)EOF";
-#endif
-
+#define CUSTOM_TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3" // Europe/Rome
 
 esp_lcd_panel_io_handle_t io_handle = NULL;
 static lv_disp_draw_buf_t disp_buf; // contains internal graphic buffer(s) called draw buffer(s)
@@ -151,21 +77,7 @@ lcd_cmd_t lcd_st7789v[] = {
 TouchLib touch(Wire, PIN_IIC_SDA, PIN_IIC_SCL, CTS328_SLAVE_ADDRESS, PIN_TOUCH_RES);
 #elif defined(TOUCH_MODULES_CST_SELF)
 TouchLib touch(Wire, PIN_IIC_SDA, PIN_IIC_SCL, CTS820_SLAVE_ADDRESS, PIN_TOUCH_RES);
-#else
-#warning "Touch models are not currently configured, use the sketch without touch panel"
 #endif
-
-bool inited_touch = false;
-bool inited_sd = false;
-#if defined(TOUCH_READ_FROM_INTERRNUPT)
-bool get_int_signal = false;
-#endif
-
-void wifi_test(void);
-void timeavailable(struct timeval *t);
-void printLocalTime();
-void SmartConfig();
-void setTimezone();
 
 static bool example_notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx)
 {
@@ -190,25 +102,11 @@ static void example_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_
 #if defined(TOUCH_MODULES_CST_MUTUAL) ||defined(TOUCH_MODULES_CST_SELF)
 static void lv_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
 {
-#if defined(TOUCH_READ_FROM_INTERRNUPT)
-    if (get_int_signal) {
-        get_int_signal = false;
-        touch.read();
-#else
     if (touch.read()) {
-#endif
-        String str_buf;
-        uint8_t fn = touch.getPointNum();
-        str_buf += " Finger num : " + String(fn) + " \n";
-        for (uint8_t i = 0; i < fn; i++) {
-            TP_Point t = touch.getPoint(i);
-            str_buf += "x: " + String(t.x) + " y: " + String(t.y) + " p: " + String(t.pressure) + " \n";
-        }
         TP_Point t = touch.getPoint(0);
         data->point.x = t.x;
         data->point.y = t.y;
         data->state = LV_INDEV_STATE_PR;
-        lv_msg_send(MSG_NEW_TOUCH_POINT, str_buf.c_str());
     } else
         data->state = LV_INDEV_STATE_REL;
 }
@@ -242,6 +140,12 @@ void setBrightness(uint8_t value)
     level = value;
 }
 
+static void send_command(spotify_cmd_t cmd)
+{
+    ui_button_feedback(cmd);
+    spotify_send(cmd);
+}
+
 void setup()
 {
     // (POWER ON)IO15 must be set to HIGH before starting, otherwise the screen will not display when using battery
@@ -250,7 +154,7 @@ void setup()
     Serial.begin(115200);
 
     sntp_servermode_dhcp(1); // (optional)
-    configTime(GMT_OFFSET_SEC, DAY_LIGHT_OFFSET_SEC, NTP_SERVER1, NTP_SERVER2);
+    configTzTime(CUSTOM_TIMEZONE, NTP_SERVER1, NTP_SERVER2);
 
     pinMode(PIN_LCD_RD, OUTPUT);
     digitalWrite(PIN_LCD_RD, HIGH);
@@ -341,9 +245,7 @@ void setup()
 
 #if defined(TOUCH_MODULES_CST_MUTUAL) || defined(TOUCH_MODULES_CST_SELF)
     /* Register touch brush with LVGL */
-    // Wire.begin(PIN_IIC_SDA, PIN_IIC_SCL, 800000);
-    inited_touch = touch.init();
-    if (inited_touch) {
+    if (touch.init()) {
         touch.setRotation(1);
         static lv_indev_drv_t indev_drv;
         lv_indev_drv_init(&indev_drv);
@@ -351,18 +253,12 @@ void setup()
         indev_drv.read_cb = lv_touchpad_read;
         lv_indev_drv_register(&indev_drv);
     }
-#if defined(TOUCH_READ_FROM_INTERRNUPT)
-    attachInterrupt(
-        PIN_TOUCH_INT, [] { get_int_signal = true; }, FALLING);
-#endif
 #endif
 
     is_initialized_lvgl = true;
 
-    LV_IMG_DECLARE(lilygo2_gif);
-    lv_obj_t *logo_img = lv_gif_create(lv_scr_act());
-    lv_obj_center(logo_img);
-    lv_gif_set_src(logo_img, &lilygo2_gif);
+    spotify_begin(); // waits for WiFi in its own task
+    ui_begin();
 
     // Adjust brightness
     pinMode(PIN_LCD_BL, OUTPUT);
@@ -370,38 +266,23 @@ void setup()
     for (int i = 0; i <= 16; ++i) {
         setBrightness(i);
         lv_timer_handler();
-        delay(50);
+        delay(30);
     }
 
-    LV_DELAY(1200);
-    lv_obj_del(logo_img);
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        Serial.printf("WiFi connected, IP %s\n", WiFi.localIP().toString().c_str());
+    }, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.printf("Connecting to %s\n", WIFI_SSID);
 
-    // https://github.com/Xinyuan-LilyGO/T-Display-S3/issues/278
-    Serial.println("tone ...");
-    tone(10, 1000, 5000);
-    delay(5000);
-    Serial.println("tone done .");
-
-
-    SD_MMC.setPins(PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0);
-    inited_sd = SD_MMC.begin("/sdcard", true, true);
-
-    wifi_test();
-
-    button1.attachClick([]() {
-        // Sleep display
-        esp_lcd_panel_io_tx_param(io_handle, 0x10, NULL, 0);
-        pinMode(PIN_POWER_ON, OUTPUT);
-        pinMode(PIN_LCD_BL, OUTPUT);
-        digitalWrite(PIN_POWER_ON, LOW);
-        digitalWrite(PIN_LCD_BL, LOW);
-        esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BUTTON_2, 0); // 1 = High, 0 = Low
-        esp_deep_sleep_start();
-    });
-
-    button2.attachClick([]() {
-        ui_switch_page();
-    });
+    button1.attachClick([]() { send_command(SPOTIFY_CMD_PREVIOUS); });
+    button2.attachClick([]() { send_command(SPOTIFY_CMD_NEXT); });
+    button1.attachLongPressStart([]() { send_command(SPOTIFY_CMD_PLAY_PAUSE); });
+    button2.attachLongPressStart([]() { send_command(SPOTIFY_CMD_PLAY_PAUSE); });
+    button1.setPressTicks(600);
+    button2.setPressTicks(600);
 }
 
 void loop()
@@ -409,190 +290,5 @@ void loop()
     lv_timer_handler();
     button1.tick();
     button2.tick();
-    delay(3);
-    static uint32_t last_tick;
-    if (millis() - last_tick > 100) {
-        struct tm timeinfo;
-        if (getLocalTime(&timeinfo)) {
-            lv_msg_send(MSG_NEW_HOUR, &timeinfo.tm_hour);
-            lv_msg_send(MSG_NEW_MIN, &timeinfo.tm_min);
-        }
-        uint32_t volt = (analogRead(PIN_BAT_VOLT) * 2 * 3.3 * 1000) / 4096;
-        lv_msg_send(MSG_NEW_VOLT, &volt);
-
-        last_tick = millis();
-    }
-}
-
-
-void wifi_test(void)
-{
-    String text;
-
-    lv_obj_t *log_label = lv_label_create(lv_scr_act());
-    lv_obj_align(log_label, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_width(log_label, LV_PCT(100));
-    lv_label_set_long_mode(log_label, LV_LABEL_LONG_SCROLL);
-    lv_label_set_recolor(log_label, true);
-
-    lv_label_set_text(log_label, "Scan WiFi");
-    LV_DELAY(1);
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-    int n = WiFi.scanNetworks();
-    Serial.println("scan done");
-    if (n == 0) {
-        text = "no networks found";
-    } else {
-        text = n;
-        text += " networks found\n";
-        for (int i = 0; i < n; ++i) {
-            text += (i + 1);
-            text += ": ";
-            text += WiFi.SSID(i);
-            text += " (";
-            text += WiFi.RSSI(i);
-            text += ")";
-            text += (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? " \n" : "*\n";
-            delay(10);
-        }
-    }
-
-    wifi_config_t current_conf;
-    esp_wifi_get_config(WIFI_IF_STA, &current_conf);
-    if (strlen((const char *)current_conf.sta.ssid) == 0) {
-        // Just for testing.
-        Serial.println("Use default WiFi SSID & PASSWORD!!");
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    } else {
-        Serial.println("Begin WiFi");
-        WiFi.begin();
-    }
-
-    lv_label_set_text(log_label, text.c_str());
-    Serial.println(text);
-    LV_DELAY(2000);
-    text = "Connecting to ";
-    Serial.print("Connecting to ");
-    text += (char *)(current_conf.sta.ssid);
-    text += "\n";
-    Serial.print((char *)(current_conf.sta.ssid));
-    // WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-    uint32_t last_tick = millis();
-    bool is_smartconfig_connect = false;
-    lv_label_set_long_mode(log_label, LV_LABEL_LONG_WRAP);
-    while (WiFi.status() != WL_CONNECTED) {
-        Serial.print(".");
-        text += ".";
-        lv_label_set_text(log_label, text.c_str());
-        LV_DELAY(100);
-        if (millis() - last_tick > WIFI_CONNECT_WAIT_MAX) { /* Automatically start smartconfig when connection times out */
-            text += "\nConnection timed out, start smartconfig";
-            lv_label_set_text(log_label, text.c_str());
-            LV_DELAY(100);
-            is_smartconfig_connect = true;
-            WiFi.mode(WIFI_AP_STA);
-            Serial.println("\r\n wait for smartconfig....");
-            text += "\r\n wait for smartconfig....";
-            text += "\nPlease use #ff0000 EspTouch# Apps to connect to the distribution network";
-            lv_label_set_text(log_label, text.c_str());
-            WiFi.beginSmartConfig();
-            while (1) {
-                LV_DELAY(100);
-                if (WiFi.smartConfigDone()) {
-                    Serial.println("\r\nSmartConfig Success\r\n");
-                    Serial.printf("SSID:%s\r\n", WiFi.SSID().c_str());
-                    Serial.printf("PSW:%s\r\n", WiFi.psk().c_str());
-                    text += "\nSmartConfig Success";
-                    text += "\nSSID:";
-                    text += WiFi.SSID().c_str();
-                    text += "\nPSW:";
-                    text += WiFi.psk().c_str();
-                    lv_label_set_text(log_label, text.c_str());
-                    LV_DELAY(1000);
-                    last_tick = millis();
-                    break;
-                }
-            }
-        }
-    }
-    if (!is_smartconfig_connect) {
-        text += "\nCONNECTED \nTakes ";
-        Serial.print("\n CONNECTED \nTakes ");
-        text += millis() - last_tick;
-        Serial.print(millis() - last_tick);
-        text += " ms\n";
-        Serial.println(" millseconds");
-        lv_label_set_text(log_label, text.c_str());
-    }
-    LV_DELAY(2000);
-    setTimezone();
-    ui_begin();
-}
-
-void printLocalTime()
-{
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        Serial.println("No time available (yet)");
-        return;
-    }
-    Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
-}
-// Callback function (get's called when time adjusts via NTP)
-void timeavailable(struct timeval *t)
-{
-    Serial.println("Got time adjustment from NTP!");
-    printLocalTime();
-    WiFi.disconnect();
-}
-
-
-
-void setTimezone()
-{
-#ifdef CUSTOM_TIMEZONE
-    String timezone = CUSTOM_TIMEZONE;
-#else
-    WiFiClientSecure *client = new WiFiClientSecure;
-    String timezone;
-    if (client) {
-        client->setCACert(rootCACertificate);
-        HTTPClient https;
-        if (https.begin(*client, GET_TIMEZONE_API)) {
-            int httpCode = https.GET();
-            if (httpCode > 0) {
-                // HTTP header has been send and Server response header has been handled
-                Serial.printf("[HTTPS] GET... code: %d\n", httpCode);
-
-                // file found at server
-                if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
-                    String payload = https.getString();
-                    Serial.println(payload);
-                    timezone = payload;
-                }
-            } else {
-                Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
-            }
-            https.end();
-        }
-        delete client;
-    }
-    for (uint32_t i = 0; i < sizeof(zones); i++) {
-        if (timezone == "None") {
-            timezone = "CST-8";
-            break;
-        }
-        if (timezone == zones[i].name) {
-            timezone = zones[i].zones;
-            break;
-        }
-    }
-#endif
-
-    Serial.println("timezone : " + timezone);
-    setenv("TZ", timezone.c_str(), 1); // set time zone
-    tzset();
+    delay(2);
 }

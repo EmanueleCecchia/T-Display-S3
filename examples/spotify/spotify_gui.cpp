@@ -1,163 +1,298 @@
 #include "spotify_gui.h"
 #include "Arduino.h"
-#include "SD_MMC.h"
 #include "lvgl.h"
+#include "pin_config.h"
+#include "time.h"
 
-LV_FONT_DECLARE(font_Alibaba);
-LV_IMG_DECLARE(lilygo1_gif);
-static lv_point_t line_points[] = {{-320, 0}, {320, 0}};
+#define COLOR_BG      lv_color_black()
+#define COLOR_CARD    lv_color_hex(0x282828)
+#define COLOR_GREEN   lv_color_hex(0x1DB954)
+#define COLOR_DIM     lv_color_hex(0x0B4D23)
+#define COLOR_TEXT    lv_color_white()
+#define COLOR_SUBTEXT lv_color_hex(0xB3B3B3)
+#define COLOR_TRACK   lv_color_hex(0x535353)
+#define COLOR_ALERT   lv_color_hex(0xF15E6C)
 
-static void update_text_subscriber_cb(lv_event_t *e);
-static void update_touch_point_subscriber_cb(lv_event_t *e);
-static void timer_task(lv_timer_t *t);
-static lv_obj_t *dis;
+#define MARGIN    10
+#define COL_X     (MARGIN + SPOTIFY_ART_SIZE + MARGIN)
+#define COL_W     (EXAMPLE_LCD_H_RES - COL_X - MARGIN)
+#define COL_MID   (COL_X + COL_W / 2 - EXAMPLE_LCD_H_RES / 2) /* column center, as offset from screen center */
+#define VIZ_Y     76
+#define VIZ_H     48
+#define VIZ_BARS  20
+#define VIZ_BAR_W 5
+#define ROW_Y     140
+#define NOTICE_MS 4000
 
-void ui_switch_page(void)
+static lv_obj_t *art_img, *header_label, *notice_label, *clock_label, *title_label, *artist_label, *viz;
+static lv_obj_t *progress_bar, *elapsed_label, *duration_label, *prev_icon, *play_icon, *next_icon;
+static lv_img_dsc_t art_dsc;
+static spotify_state_t state; /* latest copy from the Spotify task */
+static uint32_t art_version;
+static uint32_t notice_version;
+static uint32_t notice_until;
+static float bar_level[VIZ_BARS];
+static float bar_target[VIZ_BARS];
+
+static void set_text(lv_obj_t *label, const char *text)
 {
-    static uint8_t n;
-    n++;
-    lv_obj_set_tile_id(dis, 0, n % UI_PAGE_COUNT, LV_ANIM_ON);
+    /* Re-setting the same text would restart the scroll animation */
+    if (strcmp(lv_label_get_text(label), text) != 0)
+        lv_label_set_text(label, text);
 }
 
-void ui_begin()
+static void set_visible(lv_obj_t *obj, bool visible)
 {
+    if (visible)
+        lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+}
 
-    dis = lv_tileview_create(lv_scr_act());
-    lv_obj_align(dis, LV_ALIGN_TOP_RIGHT, 0, 0);
-    lv_obj_set_size(dis, LV_PCT(100), LV_PCT(100));
-    lv_obj_remove_style(dis, 0, LV_PART_SCROLLBAR);
+static void format_time(char *buf, size_t size, uint32_t ms)
+{
+    uint32_t s = ms / 1000;
+    if (s >= 3600)
+        snprintf(buf, size, "%u:%02u:%02u", s / 3600, s / 60 % 60, s % 60);
+    else
+        snprintf(buf, size, "%u:%02u", s / 60, s % 60);
+}
 
-    lv_obj_t *tv1 = lv_tileview_add_tile(dis, 0, 0, LV_DIR_VER);
-    lv_obj_t *tv2 = lv_tileview_add_tile(dis, 0, 1, LV_DIR_VER);
-    lv_obj_t *tv3 = lv_tileview_add_tile(dis, 0, 2, LV_DIR_VER);
-    /* page 1 */
-    lv_obj_t *main_cout = lv_obj_create(tv1);
-    lv_obj_set_size(main_cout, LV_PCT(100), LV_PCT(100));
-    lv_obj_clear_flag(main_cout, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_border_width(main_cout, 0, 0);
-    lv_obj_set_style_bg_color(main_cout, UI_BG_COLOR, 0);
+static lv_obj_t *make_label(const lv_font_t *font, lv_color_t color, lv_coord_t x, lv_coord_t y, lv_coord_t w)
+{
+    lv_obj_t *label = lv_label_create(lv_scr_act());
+    lv_obj_set_style_text_font(label, font, 0);
+    lv_obj_set_style_text_color(label, color, 0);
+    lv_obj_set_pos(label, x, y);
+    if (w > 0) {
+        lv_obj_set_width(label, w);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    }
+    lv_label_set_text(label, "");
+    return label;
+}
 
-    lv_obj_t *hour_cout = lv_obj_create(main_cout);
-    lv_obj_set_size(hour_cout, 140, 140);
-    lv_obj_align(hour_cout, LV_ALIGN_CENTER, -85, 0);
-    lv_obj_set_style_bg_color(hour_cout, UI_FRAME_COLOR, 0);
-    lv_obj_clear_flag(hour_cout, LV_OBJ_FLAG_SCROLLABLE);
+static lv_obj_t *make_icon(const char *symbol, lv_coord_t dx)
+{
+    lv_obj_t *icon = make_label(&lv_font_montserrat_16, COLOR_TEXT, 0, 0, 0);
+    lv_label_set_text(icon, symbol);
+    lv_obj_align(icon, LV_ALIGN_TOP_MID, COL_MID + dx, ROW_Y - 2);
+    return icon;
+}
 
-    lv_obj_t *min_cout = lv_obj_create(main_cout);
-    lv_obj_set_size(min_cout, 140, 140);
-    lv_obj_align(min_cout, LV_ALIGN_CENTER, 85, 0);
-    lv_obj_set_style_bg_color(min_cout, UI_FRAME_COLOR, 0);
-    lv_obj_clear_flag(min_cout, LV_OBJ_FLAG_SCROLLABLE);
+/* ---------------------------------------------------------------- visualizer */
 
-    lv_obj_t *seg_text = lv_label_create(main_cout);
-    lv_obj_align(seg_text, LV_ALIGN_CENTER, 0, -10);
-    lv_obj_set_style_text_font(seg_text, &font_Alibaba, 0);
-    lv_label_set_text(seg_text, ":");
-    lv_obj_set_style_text_color(seg_text, UI_FONT_COLOR, 0);
+/* Spotify no longer exposes audio analysis to new apps, so the bars are a stylised animation:
+ * random levels shaped like a spectrum, plus a ~120 BPM pulse on the low end. */
+static void viz_timer_cb(lv_timer_t *t)
+{
+    bool playing = state.status == SPOTIFY_ACTIVE && state.is_playing;
+    float beat = 1.0f - (float)(millis() % 500) / 500.0f;
+    beat *= beat;
+    bool moving = false;
+    for (int i = 0; i < VIZ_BARS; i++) {
+        float pos = (float)i / (VIZ_BARS - 1); /* 0 = bass, 1 = treble */
+        if (playing && random(100) < 35)
+            bar_target[i] = (0.85f - 0.45f * pos) * (0.3f + 0.7f * random(1000) / 1000.0f);
+        float target = playing ? LV_MIN(1.0f, bar_target[i] + 0.35f * (1.0f - pos) * beat) : 0.0f;
+        float speed = target > bar_level[i] ? 0.6f : 0.15f; /* fast attack, slow release */
+        float next = bar_level[i] + (target - bar_level[i]) * speed;
+        moving |= fabsf(next - bar_level[i]) > 0.002f;
+        bar_level[i] = next;
+    }
+    if (moving)
+        lv_obj_invalidate(viz);
+}
 
-    lv_obj_t *hour_text = lv_label_create(hour_cout);
-    lv_obj_center(hour_text);
-    lv_obj_set_style_text_font(hour_text, &font_Alibaba, 0);
-    lv_label_set_text(hour_text, "12");
-    lv_obj_set_style_text_color(hour_text, UI_FONT_COLOR, 0);
-    lv_obj_add_event_cb(hour_text, update_text_subscriber_cb, LV_EVENT_MSG_RECEIVED, NULL);
-    lv_msg_subsribe_obj(MSG_NEW_HOUR, hour_text, (void *)"%02d");
+static void viz_draw_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
+    bool playing = state.status == SPOTIFY_ACTIVE && state.is_playing;
+    lv_coord_t gap = (lv_obj_get_width(obj) - VIZ_BARS * VIZ_BAR_W) / (VIZ_BARS - 1);
 
-    lv_obj_t *min_text = lv_label_create(min_cout);
-    lv_obj_center(min_text);
-    lv_obj_set_style_text_font(min_text, &font_Alibaba, 0);
-    lv_label_set_text(min_text, "34");
-    lv_obj_set_style_text_color(min_text, UI_FONT_COLOR, 0);
-    lv_obj_add_event_cb(min_text, update_text_subscriber_cb, LV_EVENT_MSG_RECEIVED, NULL);
-    lv_msg_subsribe_obj(MSG_NEW_MIN, min_text, (void *)"%02d");
+    lv_draw_rect_dsc_t dsc;
+    lv_draw_rect_dsc_init(&dsc);
+    dsc.radius = 2;
+    for (int i = 0; i < VIZ_BARS; i++) {
+        lv_coord_t h = LV_MAX(3, (lv_coord_t)(bar_level[i] * VIZ_H));
+        dsc.bg_color = playing ? lv_color_mix(COLOR_GREEN, COLOR_DIM, (uint8_t)(80 + bar_level[i] * 175)) : COLOR_TRACK;
+        lv_area_t a;
+        a.x1 = obj->coords.x1 + i * (VIZ_BAR_W + gap);
+        a.x2 = a.x1 + VIZ_BAR_W - 1;
+        a.y2 = obj->coords.y2;
+        a.y1 = a.y2 - h + 1;
+        lv_draw_rect(draw_ctx, &dsc, &a);
+    }
+}
 
-    static lv_style_t style_line;
-    lv_style_init(&style_line);
-    lv_style_set_line_width(&style_line, 4);
-    lv_style_set_line_color(&style_line, UI_BG_COLOR);
-    lv_style_set_line_rounded(&style_line, true);
+/* ---------------------------------------------------------------- updates */
 
-    lv_obj_t *line;
-    line = lv_line_create(main_cout);
-    lv_line_set_points(line, line_points, 2);
-    lv_obj_add_style(line, &style_line, 0);
-    lv_obj_center(line);
+static void apply_state(void)
+{
+    bool active = state.status == SPOTIFY_ACTIVE;
+    bool alert = state.status == SPOTIFY_ERROR || state.status == SPOTIFY_LOGIN_NEEDED || state.status == SPOTIFY_NOT_CONFIGURED;
 
-    /* page 2 */
-    lv_obj_t *logo_img = lv_gif_create(tv2);
-    lv_obj_center(logo_img);
-    lv_gif_set_src(logo_img, &lilygo1_gif);
+    set_text(title_label, state.title);
+    set_text(artist_label, state.artist);
+    lv_obj_set_style_text_color(title_label, alert ? COLOR_ALERT : COLOR_TEXT, 0);
 
-    /* page 3 */
-    lv_obj_t *debug_label = lv_label_create(tv3);
-    String text;
-    esp_chip_info_t t;
-    esp_chip_info(&t);
-    text = "chip : ";
-    text += ESP.getChipModel();
-    text += "\n";
-    text += "psram size : ";
-    text += ESP.getPsramSize() / 1024;
-    text += " KB\n";
-    text += "flash size : ";
-    text += ESP.getFlashChipSize() / 1024;
-    text += " KB\n";
+    /* "Spotify" attribution plus the device that is playing; '#' would break the recolor syntax */
+    char header[80] = "#1DB954 Spotify#";
+    if (active && state.device[0]) {
+        size_t n = strlen(header);
+        snprintf(header + n, sizeof(header) - n, "  %s", state.device);
+        for (char *c = header + n; *c; c++)
+            if (*c == '#')
+                *c = ' ';
+    }
+    set_text(header_label, header);
 
-    extern bool inited_sd;
-    if (inited_sd) {
-        text += "SD card found\r\nSize : ";
-        text += SD_MMC.cardSize() / 1024;
-        text += " kb";
-    } else {
-        text += "SD card not found";
+    if (state.notice_version != notice_version) {
+        notice_version = state.notice_version;
+        notice_until = millis() + NOTICE_MS;
+        lv_label_set_text(notice_label, state.notice);
+        set_visible(notice_label, true);
     }
 
-    lv_label_set_text(debug_label, text.c_str());
-    lv_obj_align(debug_label, LV_ALIGN_TOP_LEFT, 0, 0);
+    set_visible(progress_bar, active);
+    set_visible(elapsed_label, active);
+    set_visible(duration_label, active);
+    bool controls = active || state.status == SPOTIFY_IDLE;
+    set_visible(prev_icon, controls);
+    set_visible(play_icon, controls);
+    set_visible(next_icon, controls);
+    set_text(play_icon, state.is_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 
-    lv_obj_t *bat_label = lv_label_create(tv3);
-    lv_obj_align_to(bat_label, debug_label, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 0);
-    lv_obj_add_event_cb(bat_label, update_text_subscriber_cb, LV_EVENT_MSG_RECEIVED, NULL);
-    lv_msg_subsribe_obj(MSG_NEW_VOLT, bat_label, (void *)"VOLT : %d mV");
+    char buf[16];
+    format_time(buf, sizeof(buf), state.duration_ms);
+    set_text(duration_label, buf);
 
-    lv_obj_t *touch_label = lv_label_create(tv3);
-    lv_obj_align_to(touch_label, bat_label, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 0);
-    lv_obj_add_event_cb(touch_label, update_touch_point_subscriber_cb, LV_EVENT_MSG_RECEIVED, NULL);
-    lv_label_set_text(touch_label, "");
-    lv_msg_subsribe_obj(MSG_NEW_TOUCH_POINT, touch_label, (void *)"%s");
-
-    lv_timer_create(timer_task, 500, seg_text);
+    if (spotify_get_art((lv_color_t *)art_dsc.data, &art_version)) {
+        lv_img_cache_invalidate_src(&art_dsc);
+        lv_obj_invalidate(art_img);
+    }
+    set_visible(art_img, state.has_art);
+    lv_obj_invalidate(viz);
 }
 
-static void timer_task(lv_timer_t *t)
+static void update_progress(void)
 {
-    lv_obj_t *seg = (lv_obj_t *)t->user_data;
-    static bool j;
-    if (j)
-        lv_obj_add_flag(seg, LV_OBJ_FLAG_HIDDEN);
-    else
-        lv_obj_clear_flag(seg, LV_OBJ_FLAG_HIDDEN);
-    j = !j;
+    if (state.status != SPOTIFY_ACTIVE)
+        return;
+    uint32_t p = state.progress_ms + (state.is_playing ? millis() - state.sampled_at : 0);
+    p = LV_MIN(p, state.duration_ms);
+    lv_bar_set_value(progress_bar, state.duration_ms ? (int32_t)((uint64_t)p * 1000 / state.duration_ms) : 0, LV_ANIM_OFF);
+    char buf[16];
+    format_time(buf, sizeof(buf), p);
+    set_text(elapsed_label, buf);
 }
 
-static void update_text_subscriber_cb(lv_event_t *e)
+static void refresh_timer_cb(lv_timer_t *t)
 {
-    lv_obj_t *label = lv_event_get_target(e);
-    lv_msg_t *m = lv_event_get_msg(e);
-
-    const char *fmt = (const char *)lv_msg_get_user_data(m);
-    const int32_t *v = (const int32_t *)lv_msg_get_payload(m);
-
-    lv_label_set_text_fmt(label, fmt, *v);
+    if (spotify_get_state(&state))
+        apply_state();
+    update_progress();
+    if (!lv_obj_has_flag(notice_label, LV_OBJ_FLAG_HIDDEN) && (int32_t)(millis() - notice_until) >= 0)
+        set_visible(notice_label, false);
 }
 
-static void update_touch_point_subscriber_cb(lv_event_t *e)
+static void clock_timer_cb(lv_timer_t *t)
 {
-    lv_obj_t *label = lv_event_get_target(e);
-    lv_msg_t *m = lv_event_get_msg(e);
+    struct tm now;
+    if (getLocalTime(&now, 0)) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%02d:%02d", now.tm_hour, now.tm_min);
+        set_text(clock_label, buf);
+    }
+}
 
-    const char *fmt = (const char *)lv_msg_get_user_data(m);
-    const char *t = (const char *)lv_msg_get_payload(m);
+static void restore_icons_cb(lv_timer_t *t)
+{
+    lv_obj_set_style_text_color(prev_icon, COLOR_TEXT, 0);
+    lv_obj_set_style_text_color(play_icon, COLOR_TEXT, 0);
+    lv_obj_set_style_text_color(next_icon, COLOR_TEXT, 0);
+}
 
-    lv_label_set_text_fmt(label, fmt, t);
+void ui_button_feedback(spotify_cmd_t cmd)
+{
+    lv_obj_t *icon = cmd == SPOTIFY_CMD_PREVIOUS ? prev_icon : cmd == SPOTIFY_CMD_NEXT ? next_icon : play_icon;
+    lv_obj_set_style_text_color(icon, COLOR_GREEN, 0);
+    lv_timer_t *t = lv_timer_create(restore_icons_cb, 250, NULL);
+    lv_timer_set_repeat_count(t, 1);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+void ui_begin(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, COLOR_BG, 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Album art, with a note icon underneath while there is none */
+    lv_obj_t *card = lv_obj_create(scr);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, SPOTIFY_ART_SIZE, SPOTIFY_ART_SIZE);
+    lv_obj_set_pos(card, MARGIN, (EXAMPLE_LCD_V_RES - SPOTIFY_ART_SIZE) / 2);
+    lv_obj_set_style_bg_color(card, COLOR_CARD, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_clip_corner(card, true, 0);
+
+    lv_obj_t *note = lv_label_create(card);
+    lv_obj_set_style_text_font(note, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(note, COLOR_TRACK, 0);
+    lv_label_set_text(note, LV_SYMBOL_AUDIO);
+    lv_obj_center(note);
+
+    art_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
+    art_dsc.header.w = SPOTIFY_ART_SIZE;
+    art_dsc.header.h = SPOTIFY_ART_SIZE;
+    art_dsc.data_size = SPOTIFY_ART_SIZE * SPOTIFY_ART_SIZE * sizeof(lv_color_t);
+    art_dsc.data = (const uint8_t *)ps_malloc(art_dsc.data_size);
+    art_img = lv_img_create(card);
+    lv_img_set_src(art_img, &art_dsc);
+    lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
+
+    /* Header: Spotify attribution + device, clock on the right */
+    header_label = make_label(&lv_font_montserrat_12, COLOR_SUBTEXT, COL_X, 8, COL_W - 40);
+    lv_label_set_long_mode(header_label, LV_LABEL_LONG_DOT);
+    lv_label_set_recolor(header_label, true);
+    clock_label = make_label(&lv_font_montserrat_12, COLOR_SUBTEXT, 0, 0, 0);
+    lv_obj_align(clock_label, LV_ALIGN_TOP_RIGHT, -MARGIN, 8);
+    notice_label = make_label(&lv_font_montserrat_12, COLOR_ALERT, COL_X, 8, COL_W);
+    lv_obj_set_style_bg_color(notice_label, COLOR_BG, 0);
+    lv_obj_set_style_bg_opa(notice_label, LV_OPA_COVER, 0);
+    lv_obj_add_flag(notice_label, LV_OBJ_FLAG_HIDDEN);
+
+    title_label = make_label(&lv_font_montserrat_20, COLOR_TEXT, COL_X, 26, COL_W);
+    artist_label = make_label(&lv_font_montserrat_16, COLOR_SUBTEXT, COL_X, 52, COL_W);
+
+    viz = lv_obj_create(scr);
+    lv_obj_remove_style_all(viz);
+    lv_obj_set_size(viz, COL_W, VIZ_H);
+    lv_obj_set_pos(viz, COL_X, VIZ_Y);
+    lv_obj_add_event_cb(viz, viz_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+
+    progress_bar = lv_bar_create(scr);
+    lv_obj_set_size(progress_bar, COL_W, 4);
+    lv_obj_set_pos(progress_bar, COL_X, ROW_Y - 10);
+    lv_bar_set_range(progress_bar, 0, 1000);
+    lv_obj_set_style_bg_color(progress_bar, COLOR_TRACK, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(progress_bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(progress_bar, COLOR_TEXT, LV_PART_INDICATOR);
+
+    elapsed_label = make_label(&lv_font_montserrat_12, COLOR_SUBTEXT, COL_X, ROW_Y, 0);
+    duration_label = make_label(&lv_font_montserrat_12, COLOR_SUBTEXT, 0, 0, 0);
+    lv_obj_align(duration_label, LV_ALIGN_TOP_RIGHT, -MARGIN, ROW_Y);
+    prev_icon = make_icon(LV_SYMBOL_PREV, -26);
+    play_icon = make_icon(LV_SYMBOL_PLAY, 0);
+    next_icon = make_icon(LV_SYMBOL_NEXT, 26);
+
+    lv_timer_create(refresh_timer_cb, 100, NULL);
+    lv_timer_create(viz_timer_cb, 40, NULL);
+    lv_timer_create(clock_timer_cb, 1000, NULL);
+    refresh_timer_cb(NULL);
 }
