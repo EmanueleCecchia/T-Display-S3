@@ -133,7 +133,7 @@
 
 ## 1️⃣0️⃣ Spotify
 
-The `spotify` example shows what is playing on your Spotify account (album art, title, artist, device, progress and an animated visualizer) and controls playback with the two buttons.
+The `spotify` example shows what is playing on your Spotify account (album art, title, artist, device, progress, the next song in the queue, shuffle / repeat and volume) and controls playback with the two buttons.
 
 1. Set up WiFi in `secrets.h` as described above
 2. On the [Spotify for Developers dashboard](https://developer.spotify.com/dashboard) click `Create app`, add the Redirect URI `http://127.0.0.1:8888/callback` and tick `Web API`
@@ -149,7 +149,7 @@ The `spotify` example shows what is playing on your Spotify account (album art, 
 
 * Skipping and pausing require Spotify Premium; otherwise the reason Spotify gives is shown at the top of the screen
 * The login lasts 6 months. When the screen says `Spotify login needed`, run `tools/spotify_auth.py` again and re-upload
-* Spotify no longer offers audio analysis, so the visualizer bars are an animation, not the real spectrum
+* If the `NEXT` line asks you to run `tools/spotify_auth.py` again, your login predates the queue permission: log in again and re-upload
 * The built-in fonts only contain ASCII, so accented letters are shown without accents (`Città` → `Citta`)
 
 ## 1️⃣1️⃣ FAQ

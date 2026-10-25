@@ -29,8 +29,8 @@ from pathlib import Path
 REDIRECT_HOST = "127.0.0.1"
 REDIRECT_PORT = 8888
 REDIRECT_URI = f"http://{REDIRECT_HOST}:{REDIRECT_PORT}/callback"
-# Read playback state + skip/play/pause. Nothing else.
-SCOPES = "user-read-playback-state user-modify-playback-state"
+# Read playback state and the queue (up next) + skip/play/pause. Nothing else.
+SCOPES = "user-read-playback-state user-read-currently-playing user-modify-playback-state"
 SECRETS_H = Path(__file__).resolve().parent.parent / "secrets.h"
 
 

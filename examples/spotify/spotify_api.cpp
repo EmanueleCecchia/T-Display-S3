@@ -21,6 +21,7 @@
 #define POLL_PLAYING_MS   1500
 #define POLL_IDLE_MS      5000
 #define AFTER_COMMAND_MS  400              // Spotify needs a moment before the state shows a skip
+#define QUEUE_REFRESH_MS  30000            // also catches songs added to the queue from the app
 #define LOGIN_RETRY_MS    (10 * 60 * 1000)
 #define BACKOFF_MIN_MS    2000
 #define BACKOFF_MAX_MS    (2 * 60 * 1000)
@@ -41,6 +42,8 @@ static String access_token;
 static uint32_t token_expires_at;
 static String refresh_token;
 static String art_url;
+static String track_uri;
+static uint32_t queue_fetched_at;
 static uint32_t backoff_ms;
 static uint32_t retry_after_ms;
 static uint8_t failures;
@@ -131,6 +134,21 @@ static String error_message(int code, const String &body)
     return msg;
 }
 
+// Tracks list their artists, episodes belong to a show
+static String item_artists(const cJSON *item)
+{
+    String artists;
+    const cJSON *artist;
+    cJSON_ArrayForEach(artist, cJSON_GetObjectItem(item, "artists")) {
+        if (artists.length())
+            artists += ", ";
+        artists += json_str(artist, "name");
+    }
+    if (artists.isEmpty())
+        artists = json_str(cJSON_GetObjectItem(item, "show"), "name");
+    return artists;
+}
+
 static uint32_t current_progress(void)
 {
     uint32_t p = cur.progress_ms + (cur.is_playing ? millis() - cur.sampled_at : 0);
@@ -171,7 +189,9 @@ static void set_status(spotify_status_t status, const char *title, const char *d
     strlcpy(cur.title, title, sizeof(cur.title));
     strlcpy(cur.artist, detail, sizeof(cur.artist));
     cur.device[0] = '\0';
+    cur.up_next[0] = '\0';
     cur.progress_ms = cur.duration_ms = 0;
+    track_uri = "";
     publish();
     if (art_url.length()) {
         art_url = "";
@@ -415,6 +435,37 @@ static void update_art(const String &url)
     publish_art(ok);
 }
 
+// "Up next" is the first item of the queue; reading it needs the user-read-currently-playing scope.
+static void update_queue(void)
+{
+    String body;
+    int code = api_call("GET", "/queue", &body);
+    queue_fetched_at = millis();
+    String next;
+    if (code == HTTP_CODE_OK) {
+        cJSON *root = cJSON_Parse(body.c_str());
+        const cJSON *item = cJSON_GetArrayItem(cJSON_GetObjectItem(root, "queue"), 0);
+        next = json_str(item, "name");
+        String artists = item_artists(item);
+        if (next.length() && artists.length())
+            next += " - " + artists;
+        cJSON_Delete(root);
+    } else if (code == HTTP_CODE_UNAUTHORIZED || code == HTTP_CODE_FORBIDDEN) {
+        next = "Run tools/spotify_auth.py again to see the queue"; // token from before the scope was added
+    } else {
+        if (code == 429)
+            backoff_ms = max(backoff_ms, retry_after_ms);
+        return; // keep the previous one
+    }
+    char text[sizeof(cur.up_next)];
+    to_ascii(text, sizeof(text), next.c_str());
+    if (strcmp(text, cur.up_next) != 0) {
+        Serial.printf("[spotify] up next: %s\n", text);
+        strlcpy(cur.up_next, text, sizeof(cur.up_next));
+        publish();
+    }
+}
+
 /* ---------------------------------------------------------------- polling & commands */
 
 // A poll failed: back off exponentially (honouring Retry-After) and show persistent errors.
@@ -456,27 +507,27 @@ static uint32_t poll_player(void)
         return POLL_PLAYING_MS;
     }
 
+    bool was_shuffled = cur.shuffle;
+    const cJSON *device = cJSON_GetObjectItem(root, "device");
+    const char *repeat = json_str(root, "repeat_state");
     cur.status = SPOTIFY_ACTIVE;
     cur.is_playing = cJSON_IsTrue(cJSON_GetObjectItem(root, "is_playing"));
+    cur.shuffle = cJSON_IsTrue(cJSON_GetObjectItem(root, "shuffle_state"));
+    cur.repeat = !strcmp(repeat, "track") ? SPOTIFY_REPEAT_TRACK : !strcmp(repeat, "context") ? SPOTIFY_REPEAT_CONTEXT : SPOTIFY_REPEAT_OFF;
+    cur.volume = json_int(device, "volume_percent", -1);
     cur.progress_ms = json_int(root, "progress_ms", 0);
     cur.sampled_at = millis();
     cur.duration_ms = json_int(item, "duration_ms", 0);
     to_ascii(cur.title, sizeof(cur.title), json_str(item, "name"));
-    to_ascii(cur.device, sizeof(cur.device), json_str(cJSON_GetObjectItem(root, "device"), "name"));
+    to_ascii(cur.artist, sizeof(cur.artist), item_artists(item).c_str());
+    to_ascii(cur.device, sizeof(cur.device), json_str(device, "name"));
+    String uri = json_str(item, "uri");
+    bool new_track = uri != track_uri;
+    // The queue changes with the track and with shuffle; refresh it then, and now and again
+    bool queue_stale = new_track || cur.shuffle != was_shuffled || millis() - queue_fetched_at > QUEUE_REFRESH_MS;
+    track_uri = uri;
 
-    // Tracks list their artists, episodes belong to a show
-    String artists;
     const cJSON *show = cJSON_GetObjectItem(item, "show");
-    const cJSON *artist;
-    cJSON_ArrayForEach(artist, cJSON_GetObjectItem(item, "artists")) {
-        if (artists.length())
-            artists += ", ";
-        artists += json_str(artist, "name");
-    }
-    if (artists.isEmpty())
-        artists = json_str(show, "name");
-    to_ascii(cur.artist, sizeof(cur.artist), artists.c_str());
-
     const cJSON *album = cJSON_GetObjectItem(item, "album");
     const cJSON *images = cJSON_GetObjectItem(album ? album : item, "images");
     if (cJSON_GetArraySize(images) == 0 && show)
@@ -485,11 +536,14 @@ static uint32_t poll_player(void)
     cJSON_Delete(root);
 
     publish();
-    if (url != art_url) {
+    if (new_track)
         Serial.printf("[spotify] now playing: %s - %s\n", cur.artist, cur.title);
+    if (url != art_url) {
         art_url = url;
         update_art(url);
     }
+    if (queue_stale)
+        update_queue();
     return cur.is_playing ? POLL_PLAYING_MS : POLL_IDLE_MS;
 }
 

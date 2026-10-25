@@ -1,7 +1,7 @@
 /* Spotify now-playing display for the LilyGo T-Display-S3.
  *
- * Shows the album art, title, artist, progress and a visualizer of whatever plays on your
- * Spotify account, and controls playback with the two buttons:
+ * Shows the album art, title, artist, progress, up next, shuffle / repeat and volume of whatever
+ * plays on your Spotify account, and controls playback with the two buttons:
  *   BOOT (GPIO0) click  : previous track
  *   KEY (GPIO14) click  : next track
  *   hold either button  : play / pause

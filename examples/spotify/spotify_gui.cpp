@@ -7,7 +7,6 @@
 #define COLOR_BG      lv_color_black()
 #define COLOR_CARD    lv_color_hex(0x282828)
 #define COLOR_GREEN   lv_color_hex(0x1DB954)
-#define COLOR_DIM     lv_color_hex(0x0B4D23)
 #define COLOR_TEXT    lv_color_white()
 #define COLOR_SUBTEXT lv_color_hex(0xB3B3B3)
 #define COLOR_TRACK   lv_color_hex(0x535353)
@@ -17,22 +16,19 @@
 #define COL_X     (MARGIN + SPOTIFY_ART_SIZE + MARGIN)
 #define COL_W     (EXAMPLE_LCD_H_RES - COL_X - MARGIN)
 #define COL_MID   (COL_X + COL_W / 2 - EXAMPLE_LCD_H_RES / 2) /* column center, as offset from screen center */
-#define VIZ_Y     76
-#define VIZ_H     48
-#define VIZ_BARS  20
-#define VIZ_BAR_W 5
+#define NEXT_Y    82
+#define STATUS_Y  106
 #define ROW_Y     140
 #define NOTICE_MS 4000
 
-static lv_obj_t *art_img, *header_label, *notice_label, *clock_label, *title_label, *artist_label, *viz;
+static lv_obj_t *art_img, *header_label, *notice_label, *clock_label, *title_label, *artist_label;
+static lv_obj_t *next_caption, *next_label, *shuffle_icon, *repeat_icon, *repeat_one_label, *volume_label;
 static lv_obj_t *progress_bar, *elapsed_label, *duration_label, *prev_icon, *play_icon, *next_icon;
 static lv_img_dsc_t art_dsc;
 static spotify_state_t state; /* latest copy from the Spotify task */
 static uint32_t art_version;
 static uint32_t notice_version;
 static uint32_t notice_until;
-static float bar_level[VIZ_BARS];
-static float bar_target[VIZ_BARS];
 
 static void set_text(lv_obj_t *label, const char *text)
 {
@@ -80,53 +76,29 @@ static lv_obj_t *make_icon(const char *symbol, lv_coord_t dx)
     return icon;
 }
 
-/* ---------------------------------------------------------------- visualizer */
-
-/* Spotify no longer exposes audio analysis to new apps, so the bars are a stylised animation:
- * random levels shaped like a spectrum, plus a ~120 BPM pulse on the low end. */
-static void viz_timer_cb(lv_timer_t *t)
-{
-    bool playing = state.status == SPOTIFY_ACTIVE && state.is_playing;
-    float beat = 1.0f - (float)(millis() % 500) / 500.0f;
-    beat *= beat;
-    bool moving = false;
-    for (int i = 0; i < VIZ_BARS; i++) {
-        float pos = (float)i / (VIZ_BARS - 1); /* 0 = bass, 1 = treble */
-        if (playing && random(100) < 35)
-            bar_target[i] = (0.85f - 0.45f * pos) * (0.3f + 0.7f * random(1000) / 1000.0f);
-        float target = playing ? LV_MIN(1.0f, bar_target[i] + 0.35f * (1.0f - pos) * beat) : 0.0f;
-        float speed = target > bar_level[i] ? 0.6f : 0.15f; /* fast attack, slow release */
-        float next = bar_level[i] + (target - bar_level[i]) * speed;
-        moving |= fabsf(next - bar_level[i]) > 0.002f;
-        bar_level[i] = next;
-    }
-    if (moving)
-        lv_obj_invalidate(viz);
-}
-
-static void viz_draw_cb(lv_event_t *e)
-{
-    lv_obj_t *obj = lv_event_get_target(e);
-    lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
-    bool playing = state.status == SPOTIFY_ACTIVE && state.is_playing;
-    lv_coord_t gap = (lv_obj_get_width(obj) - VIZ_BARS * VIZ_BAR_W) / (VIZ_BARS - 1);
-
-    lv_draw_rect_dsc_t dsc;
-    lv_draw_rect_dsc_init(&dsc);
-    dsc.radius = 2;
-    for (int i = 0; i < VIZ_BARS; i++) {
-        lv_coord_t h = LV_MAX(3, (lv_coord_t)(bar_level[i] * VIZ_H));
-        dsc.bg_color = playing ? lv_color_mix(COLOR_GREEN, COLOR_DIM, (uint8_t)(80 + bar_level[i] * 175)) : COLOR_TRACK;
-        lv_area_t a;
-        a.x1 = obj->coords.x1 + i * (VIZ_BAR_W + gap);
-        a.x2 = a.x1 + VIZ_BAR_W - 1;
-        a.y2 = obj->coords.y2;
-        a.y1 = a.y2 - h + 1;
-        lv_draw_rect(draw_ctx, &dsc, &a);
-    }
-}
-
 /* ---------------------------------------------------------------- updates */
+
+/* Up next, then shuffle / repeat (green when on) and the device volume */
+static void apply_queue_and_status(bool active)
+{
+    set_visible(next_caption, active);
+    set_visible(next_label, active);
+    set_visible(shuffle_icon, active);
+    set_visible(repeat_icon, active);
+    set_visible(repeat_one_label, active && state.repeat == SPOTIFY_REPEAT_TRACK);
+    set_visible(volume_label, active && state.volume >= 0);
+    if (!active)
+        return;
+
+    set_text(next_label, state.up_next[0] ? state.up_next : "Nothing queued");
+    lv_obj_set_style_text_color(shuffle_icon, state.shuffle ? COLOR_GREEN : COLOR_SUBTEXT, 0);
+    lv_obj_set_style_text_color(repeat_icon, state.repeat != SPOTIFY_REPEAT_OFF ? COLOR_GREEN : COLOR_SUBTEXT, 0);
+
+    const char *symbol = state.volume == 0 ? LV_SYMBOL_MUTE : state.volume < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%s %d%%", symbol, state.volume);
+    set_text(volume_label, buf);
+}
 
 static void apply_state(void)
 {
@@ -173,7 +145,7 @@ static void apply_state(void)
         lv_obj_invalidate(art_img);
     }
     set_visible(art_img, state.has_art);
-    lv_obj_invalidate(viz);
+    apply_queue_and_status(active);
 }
 
 static void update_progress(void)
@@ -270,11 +242,18 @@ void ui_begin(void)
     title_label = make_label(&lv_font_montserrat_20, COLOR_TEXT, COL_X, 26, COL_W);
     artist_label = make_label(&lv_font_montserrat_16, COLOR_SUBTEXT, COL_X, 52, COL_W);
 
-    viz = lv_obj_create(scr);
-    lv_obj_remove_style_all(viz);
-    lv_obj_set_size(viz, COL_W, VIZ_H);
-    lv_obj_set_pos(viz, COL_X, VIZ_Y);
-    lv_obj_add_event_cb(viz, viz_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+    next_caption = make_label(&lv_font_montserrat_12, COLOR_GREEN, COL_X, NEXT_Y + 1, 0);
+    lv_label_set_text(next_caption, "NEXT");
+    next_label = make_label(&lv_font_montserrat_14, COLOR_TEXT, COL_X + 36, NEXT_Y, COL_W - 36);
+
+    shuffle_icon = make_label(&lv_font_montserrat_14, COLOR_SUBTEXT, COL_X, STATUS_Y, 0);
+    lv_label_set_text(shuffle_icon, LV_SYMBOL_SHUFFLE);
+    repeat_icon = make_label(&lv_font_montserrat_14, COLOR_SUBTEXT, COL_X + 28, STATUS_Y, 0);
+    lv_label_set_text(repeat_icon, LV_SYMBOL_LOOP);
+    repeat_one_label = make_label(&lv_font_montserrat_12, COLOR_GREEN, COL_X + 46, STATUS_Y - 4, 0); /* repeat one track */
+    lv_label_set_text(repeat_one_label, "1");
+    volume_label = make_label(&lv_font_montserrat_14, COLOR_SUBTEXT, 0, 0, 0);
+    lv_obj_align(volume_label, LV_ALIGN_TOP_RIGHT, -MARGIN, STATUS_Y);
 
     progress_bar = lv_bar_create(scr);
     lv_obj_set_size(progress_bar, COL_W, 4);
@@ -292,7 +271,6 @@ void ui_begin(void)
     next_icon = make_icon(LV_SYMBOL_NEXT, 26);
 
     lv_timer_create(refresh_timer_cb, 100, NULL);
-    lv_timer_create(viz_timer_cb, 40, NULL);
     lv_timer_create(clock_timer_cb, 1000, NULL);
     refresh_timer_cb(NULL);
 }

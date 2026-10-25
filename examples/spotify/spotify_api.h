@@ -16,6 +16,12 @@ typedef enum {
 } spotify_status_t;
 
 typedef enum {
+    SPOTIFY_REPEAT_OFF,
+    SPOTIFY_REPEAT_CONTEXT, /* repeat the album/playlist */
+    SPOTIFY_REPEAT_TRACK,
+} spotify_repeat_t;
+
+typedef enum {
     SPOTIFY_CMD_PREVIOUS,
     SPOTIFY_CMD_NEXT,
     SPOTIFY_CMD_PLAY_PAUSE,
@@ -27,7 +33,11 @@ typedef struct {
     char title[96];  /* track/episode name, or a status message */
     char artist[96]; /* artists/show name, or status details */
     char device[48];
-    char notice[64]; /* short-lived message, e.g. why a button press failed */
+    char up_next[128]; /* "Title - Artist" of the next queued item, or a hint */
+    char notice[64];   /* short-lived message, e.g. why a button press failed */
+    bool shuffle;
+    spotify_repeat_t repeat;
+    int8_t volume; /* 0..100, -1 when the device doesn't report it */
     uint32_t progress_ms;
     uint32_t duration_ms;
     uint32_t sampled_at; /* millis() at which progress_ms was valid */
